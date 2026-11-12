@@ -78,7 +78,11 @@ export function seenTtlMs(kind) {
  *   response). Definitely not delivered; retrying the same request is
  *   pointless until the cause is fixed.
  * - network / unknown: no response was received, so delivery is UNKNOWN.
- *   Must never auto-retry — a retry may deliver a second copy.
+ *   Retrying is safe anyway, because every attempt reuses the same stable
+ *   client_id and the server deduplicates on it — verified by a live test
+ *   on 2026-11-12: the same client_id sent twice got two success receipts
+ *   but delivered only one message to the phone. Retries are therefore
+ *   allowed, but capped (maxSendAttempts) and spaced out (retryBackoffMs).
  */
 export function classifySendError(err) {
   // Match against name + message: undici AbortError carries the signal in
@@ -104,9 +108,22 @@ export function classifySendError(err) {
     };
   }
   if (/fetch failed|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError|network|timed? ?out/i.test(hay)) {
-    return { errorClass: "network", retryable: false, reason: "response-unknown" };
+    return { errorClass: "network", retryable: true, reason: "response-unknown" };
   }
-  return { errorClass: "unknown", retryable: false, reason: "unclassified" };
+  return { errorClass: "unknown", retryable: true, reason: "unclassified" };
+}
+
+/**
+ * Backoff between send retries, by attempt count (1-based: how many times
+ * this item has already failed). 10s after the 1st failure, 30s after the
+ * 2nd, 60s after that. Together with maxSendAttempts (3) this bounds a
+ * network/unknown failure to 3 sends spread over ~40s before it parks
+ * in outbox/failed for a human to look at.
+ */
+export function retryBackoffMs(attempt) {
+  if (attempt <= 1) return 10_000;
+  if (attempt === 2) return 30_000;
+  return 60_000;
 }
 
 /**

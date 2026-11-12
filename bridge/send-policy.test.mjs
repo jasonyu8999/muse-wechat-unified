@@ -10,6 +10,7 @@ import {
   classifySendError,
   contentHash,
   dedupKeyForRequest,
+  retryBackoffMs,
   seenTtlMs,
   stableClientId,
 } from "./send-policy.mjs";
@@ -49,7 +50,7 @@ test("seenTtlMs: msg keys live an hour, hash fallback only 30s", () => {
   assert.equal(seenTtlMs("hash"), 30_000);
 });
 
-test("classifySendError: local failures are the only retryable class", () => {
+test("classifySendError: network/unknown are retryable (server dedupes on stable client_id)", () => {
   assert.deepEqual(classifySendError(new Error("没有找到 context_token，需要在 start() 运行期间至少收到过一条消息")), {
     errorClass: "local",
     retryable: true,
@@ -64,14 +65,25 @@ test("classifySendError: local failures are the only retryable class", () => {
   assert.equal(server.errorClass, "server");
   assert.equal(server.retryable, false);
   assert.equal(server.errcode, -2);
+  // 2026-11-12 真机验证：同一 client_id 发两遍，服务端两次都给成功回执，
+  // 手机上只收到一条。所以没收到回执的失败也可以用同一 client_id 重发，
+  // 服务端去重，不会重复投递。
   const network = classifySendError(new Error("fetch failed"));
   assert.equal(network.errorClass, "network");
-  assert.equal(network.retryable, false);
+  assert.equal(network.retryable, true);
   const abort = classifySendError(Object.assign(new Error("aborted"), { name: "AbortError" }));
   assert.equal(abort.errorClass, "network");
+  assert.equal(abort.retryable, true);
   const unknown = classifySendError(new Error("something entirely new"));
   assert.equal(unknown.errorClass, "unknown");
-  assert.equal(unknown.retryable, false);
+  assert.equal(unknown.retryable, true);
+});
+
+test("retryBackoffMs: 10s, 30s, then 60s", () => {
+  assert.equal(retryBackoffMs(1), 10_000);
+  assert.equal(retryBackoffMs(2), 30_000);
+  assert.equal(retryBackoffMs(3), 60_000);
+  assert.equal(retryBackoffMs(9), 60_000);
 });
 
 test("checkOutboundPath: only files inside the outbound root, symlinks resolved", () => {

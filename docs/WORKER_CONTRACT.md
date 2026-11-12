@@ -6,7 +6,7 @@
 ## 1. 认领
 
 1. 列出 `~/workspace/muse-wechat-unified/bridge/queue/pending/` 的任务文件（按修改时间从旧到新）。
-2. 开工前先扫 `bridge/outbox/failed/`：先查 `bridge/data/send-ledger.json` 里对应 taskId 的 `errorClass`，再决定能不能补发——**只有 `local`（发送前失败，确定没发出去，如凭证丢失、附件上传失败）可以把 `attempts` 归零后移回 `outbox/`**；`server`（服务端明确拒绝，如 errcode=-2）要先修好原因再补发；`unknown` / `network`（没收到回执，是否发出未知）**绝不直接补发**，先问用户那条消息收到了没有，确认没收到再补发（补发时沿用原来的 clientId，不会重复）；`policy`（路径白名单拒绝）不要补发，先修路径。不要删除 failed 里的文件。
+2. 开工前先扫 `bridge/outbox/failed/`：先查 `bridge/data/send-ledger.json` 里对应 taskId 的 `errorClass`，再决定能不能补发——**只有 `local`（发送前失败，确定没发出去，如凭证丢失、附件上传失败）可以把 `attempts` 归零后移回 `outbox/`**；`server`（服务端明确拒绝，如 errcode=-2）要先修好原因再补发；`unknown` / `network`（没收到回执，是否发出未知）**绝不直接补发**，先问用户那条消息收到了没有，确认没收到再补发（补发时沿用原来的 clientId，不会重复）；`policy`（路径白名单拒绝）不要补发，先修路径。不要删除 failed 里的文件。注意：桥接现在会对 network / unknown 自动重试（同一 clientId、退避、最多 3 次），所以进到 failed/ 的 network / unknown 项是已经重试耗尽的，手动补发仍按本条先问用户——去重只在即时重发验证过，隔久了是否还去重未经验证。
 2. 每次只认领一个：`mv pending/<id>.json processing/<id>.json`（原子操作；抢不到就安静退出）。
 3. 认领后立即 `touch processing/<id>.json`，长耗时工作期间约每 60 秒再 touch 一次（租约 10 分钟，停 touch 会被回收重做）。
 4. 认领后立即发进度消息：写 `outbox/<id>-progress.json`，`taskId` 用 `<id>-progress`（与最终回复的 taskId 不同，避免账本幂等拦截），正文一句话说明正在处理什么，例如“收到，正在处理：……”。桥接约 5 秒内发出。最终回复写完后再正常写 `outbox/<id>.json`。

@@ -25,6 +25,7 @@ import {
   checkOutboundPath,
   classifySendError,
   dedupKeyForRequest,
+  retryBackoffMs,
   seenTtlMs,
   stableClientId,
 } from "./send-policy.mjs";
@@ -326,6 +327,25 @@ function makeAgent(cfg) {
 // ---------------------------------------------------------------------------
 // Outbox sender + stale-claim requeue (runs inside the daemon)
 // ---------------------------------------------------------------------------
+/**
+ * 发通知/回复前的网络探测：对服务端 HEAD 一下（3 秒超时）。
+ * 任何 HTTP 回应（哪怕 4xx）都算网络通；只有 fetch 本身抛错才算断网。
+ * 与 SDK 共用全局 fetch + 代理环境变量（NODE_USE_ENV_PROXY=1），所以
+ * 探测结果与真实发送走同一条出口；断网时本轮直接跳过、不尝试发送，
+ * 避免产生一条没回执的 unknown 记录。
+ */
+async function checkNetwork(timeoutMs = 3000) {
+  try {
+    await fetch(DEFAULT_BASE_URL, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function processOutbox(bot, cfg) {
   let files = [];
   try {
@@ -337,6 +357,14 @@ async function processOutbox(bot, cfg) {
   } catch {
     return;
   }
+  // 发之前先测网络：断网时整轮跳过，消息留在 outbox 等下轮，不产生
+  // 没回执的 unknown 记录。无待发项时不探测，避免每 2 秒一次空请求。
+  if (files.length > 0 && !(await checkNetwork())) {
+    log("warn", "outbox skipped: network unreachable, will retry next cycle", {
+      items: files.length,
+    });
+    return;
+  }
   for (const { name } of files) {
     const filePath = path.join(DIRS.outbox, name);
     const item = readJson(filePath, null);
@@ -344,6 +372,10 @@ async function processOutbox(bot, cfg) {
       try {
         fs.renameSync(filePath, path.join(DIRS.outboxFailed, name));
       } catch {}
+      continue;
+    }
+    // 退避期内不重发：上轮可重试失败后按 retryBackoffMs 等待。
+    if (item.nextRetryAt && Date.now() < item.nextRetryAt) {
       continue;
     }
     // 幂等：账本已记 sent 的不再重发。
@@ -465,8 +497,8 @@ async function processOutbox(bot, cfg) {
       sendErr = err;
       sentParts = err.parts || [];
       // 引用被服务端明确拒绝、且文字部分尚未发出时，才降级为普通回复
-      // （同一 clientId，幂等）；网络/未知错误绝不补发第二条——无法确认
-      // 第一条是否已送达，补发可能造成重复。
+      // （同一 clientId，幂等）。网络/未知错误不在此处立刻补发，由外层
+      // 重试循环按退避重发（同一 clientId，服务端去重，见 send-policy）。
       if (
         response.quote &&
         !sentParts.some((p) => p.kind === "text") &&
@@ -503,25 +535,31 @@ async function processOutbox(bot, cfg) {
       continue;
     }
 
-    // 失败：按错误类别处理。local（发送前失败，确定没发出去）才可重试；
-    // server / network / unknown 立即停放进 failed，绝不自动重试。
+    // 失败：按错误类别处理。可重试类（local / network / unknown）留在
+    // outbox，按退避重发，最多 maxSendAttempts（3）次；次数耗尽才进 failed。
+    // network / unknown 能重试的前提是同一 clientId 下服务端去重
+    // （2026-11-12 真机验证：同键发两遍，手机上只收到一条）。
+    // 只有 server（服务端明确拒绝）立即停放进 failed，不重试。
     const cls = classifySendError(sendErr);
     item.attempts = (item.attempts || 0) + 1;
     item.lastError = String(sendErr).slice(0, 300);
     if (cls.retryable) {
+      item.nextRetryAt = Date.now() + retryBackoffMs(item.attempts);
       writeFileAtomic(filePath, JSON.stringify(item, null, 2), 0o600);
       saveLedgerEntry(item.taskId, {
-        status: "failed",
+        status: "retrying",
         errorClass: cls.errorClass,
         error: item.lastError,
         clientIds,
         parts,
         retryable: true,
+        nextRetryAt: item.nextRetryAt,
       });
       log("warn", "outbox send failed (will retry)", {
         taskId: item.taskId,
         attempts: item.attempts,
         errorClass: cls.errorClass,
+        nextRetryAt: new Date(item.nextRetryAt).toISOString(),
         err: item.lastError,
       });
     } else {

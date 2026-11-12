@@ -26,7 +26,7 @@ node bridge.mjs logout        # 退出登录并清除绑定（谨慎：需重新
 
 - `bridge/logs/bridge.log` — 结构化 JSONL（无 token、无正文）；`task queued` / `outbox sent` 是关键行。
 - `bridge/data/chatlog.md` — 微信对话记录（用户/我，按时间）。
-- `bridge/data/send-ledger.json` — 发送账本（intent → sent；unknown 不自动重发）。
+- `bridge/data/send-ledger.json` — 发送账本（intent → sent；network/unknown 自动重试：同一 client_id、退避 10s/30s/60s、最多 3 次；server 不重试）。
 - `bridge/data/heartbeat` — 桥接心跳（每 5 秒刷新；超过 60 秒未刷新即异常）。
 - `~/hooks/logs/wechat-tasks-watch.jsonl` — Hook 每次轮询的判决（silent/wake）。
 - `bridge/data/unknown-senders.json` — 被白名单挡下的发信人（只记 id/次数，不记内容）。
