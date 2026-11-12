@@ -10,6 +10,8 @@
 **在微信里发一句话，Beacon 去干活——再回微信里告诉你结果。**
 **Send a message in WeChat. Beacon does the work — and answers you there.**
 
+> 🚫 **不用开梯子，不用魔法——打开微信就能聊。No VPN needed.**
+
 > **一个 Muse，多个入口，共享的知识，统一的任务。**
 > **One Muse. Multiple interfaces. Shared knowledge. Unified tasks.**
 
@@ -20,6 +22,8 @@
 ## 🇨🇳 中文
 
 ### ✨ 用起来是什么感觉
+
+> 🚫 **不用魔法，不用开梯子。** 不需要 VPN、不需要翻墙、不需要额外装任何东西——打开微信就能跟 Beacon 说话。而且功能都齐了：语音、图片、文件、开发任务，全在微信里完成，不用在几个 App 之间来回切。梯子只在第一次配置时用一下（装环境、接服务）；配好之后，日常在微信里聊天就再也不用开梯子了。
 
 | 你在微信里发… | Beacon 会… |
 |---|---|
@@ -124,6 +128,8 @@ Project A 参考代码（MIT，见 `research/project-a/LICENSE`）。
 ## 🇬🇧 English
 
 ### ✨ What it feels like
+
+> 🚫 **No VPN, no proxy.** No VPN, no firewall hopping, nothing extra to install — just open WeChat and talk to Beacon. And the features are all there: voice, photos, files, dev tasks, all inside WeChat, no app-hopping. A VPN is only needed once, during first-time setup (installing dependencies, wiring up services); after that, daily use needs none.
 
 | You send in WeChat… | Beacon does… |
 |---|---|
