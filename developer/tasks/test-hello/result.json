@@ -1,0 +1,11 @@
+{
+  "taskId": "test-hello",
+  "status": "ok",
+  "exitCode": 0,
+  "durationMs": 14317,
+  "workdir": "/home/hatch/workspace/muse-wechat-unified/developer/work/test-hello",
+  "model": "qianwen-maas/deepseek-v4.1-flash",
+  "promptFile": "/tmp/dev-task-test.txt",
+  "outputFile": "/home/hatch/workspace/muse-wechat-unified/developer/tasks/test-hello/out.txt",
+  "errorFile": "/home/hatch/workspace/muse-wechat-unified/developer/tasks/test-hello/err.txt"
+}

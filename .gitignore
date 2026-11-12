@@ -1,0 +1,33 @@
+# ===== 依赖与构建产物 =====
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+transport/dist/
+.cache/
+
+# ===== 登录态与密钥（永不提交）=====
+bridge/state/
+bridge/config.json
+*.env
+*.pem
+*.key
+credentials*.json
+
+# ===== 运行时数据（含用户对话原文，一律不提交）=====
+bridge/queue/
+bridge/outbox/
+bridge/data/
+bridge/logs/
+bridge/media/
+bridge/backups/
+bridge/*.pid
+
+# ===== 本地模型与生成物 =====
+media/
+knowledge/knowledge.db
+knowledge/__pycache__/
+
+# ===== 临时工作区 =====
+developer/work/
+*.log

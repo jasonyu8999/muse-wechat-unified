@@ -1,0 +1,6 @@
+[Unit]
+Description=WeChat bridge watchdog (checks every 15 min, restarts only if down)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/hatch/workspace/muse-wechat-unified/bridge/watchdog.sh

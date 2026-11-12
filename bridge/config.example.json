@@ -1,0 +1,1 @@
+{"ackText":"收到，正在处理…","bindWindowMs":600000,"maxSendAttempts":3,"outboxIntervalMs":2000,"ownerId":"<Owner 的 conversationId，形如 xxxx@im.wechat>","processingTimeoutMs":600000}

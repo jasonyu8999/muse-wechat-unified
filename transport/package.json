@@ -1,0 +1,1 @@
+{"dependencies":{"silk-wasm":"^3.7.1","typescript":"5.8"},"description":"iLink transport for the Muse x WeChat unified agent (vendored MIT weixin-agent-sdk, built with tsc)","name":"muse-wechat-bridge-transport","private":true,"scripts":{"build":"tsc -p tsconfig.vendor.json"},"type":"module","version":"1.0.0","devDependencies":{"@types/node":"^26.6.6"}}

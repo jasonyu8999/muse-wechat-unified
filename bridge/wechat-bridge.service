@@ -1,0 +1,25 @@
+[Unit]
+Description=Muse WeChat Bridge (iLink)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hatch/workspace/muse-wechat-unified/bridge
+ExecStart=/usr/bin/node --max-old-space-size=256 /home/hatch/workspace/muse-wechat-unified/bridge/bridge.mjs run
+# 内存上限：桥接常驻约 50MB，512M 是防泄漏的安全阀，不是日常占用。
+MemoryMax=512M
+Environment=OPENCLAW_STATE_DIR=/home/hatch/workspace/muse-wechat-unified/bridge/state
+# 出口代理：运行时注入 shell 的 HTTP(S)_PROXY 等变量，systemd 服务默认没有。
+# 由 scripts/setup-systemd.sh 从当前环境生成 /run/hatch/wechat-bridge.env（0600，tmpfs）；
+# 前缀 - 表示文件缺失时忽略（此时 fetch 会失败，见 2026-11-12 教训）。
+EnvironmentFile=-/run/hatch/wechat-bridge.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
