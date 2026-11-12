@@ -21,6 +21,13 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  checkOutboundPath,
+  classifySendError,
+  dedupKeyForRequest,
+  seenTtlMs,
+  stableClientId,
+} from "./send-policy.mjs";
 
 const BRIDGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(BRIDGE_DIR, "..");
@@ -131,24 +138,19 @@ function taskId() {
   return `wx-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
-function hashTask(conversationId, text, mediaKind) {
-  return crypto
-    .createHash("sha256")
-    .update(`${conversationId}|${text}|${mediaKind || ""}`)
-    .digest("hex")
-    .slice(0, 32);
-}
-
 function loadSeen() {
-  const seen = readJson(SEEN_PATH, []);
+  const raw = readJson(SEEN_PATH, []);
   const now = Date.now();
-  // 去重窗口 5 分钟：长轮询的重投发生在数秒内，5 分钟绰绰有余；
-  // 之前是 1 小时，用户一小时内重发相同问候会被误判为重投而丢弃（2026-11-12 实测）。
-  return Array.isArray(seen) ? seen.filter((e) => now - e.at < 300_000) : [];
+  if (!Array.isArray(raw)) return [];
+  // Legacy entries stored {hash} — treat them as hash-kind keys.
+  return raw
+    .map((e) => (e.key ? e : e.hash ? { key: `h:${e.hash}`, at: e.at } : null))
+    .filter(Boolean)
+    .filter((e) => now - e.at < seenTtlMs(e.key.startsWith("m:") ? "msg" : "hash"));
 }
-function markSeen(hash) {
+function markSeen(key) {
   const seen = loadSeen();
-  seen.push({ hash, at: Date.now() });
+  seen.push({ key, at: Date.now() });
   while (seen.length > 500) seen.shift();
   writeFileAtomic(SEEN_PATH, JSON.stringify(seen), 0o600);
 }
@@ -242,9 +244,12 @@ function makeAgent(cfg) {
       }
 
       const mediaKind = request.media?.type || "";
-      const h = hashTask(from, request.text || "", mediaKind);
-      if (loadSeen().some((e) => e.hash === h)) {
-        log("info", "duplicate message ignored", { hash: h });
+      // 去重：优先用服务端 msg_id（request.quote 就是产生正文的那条原消息，
+      // 带有 msg_id）；没有 msg_id 时才用内容哈希兜底，且只在 30 秒内有效，
+      // 避免把用户正常重发的相同问候误判为重投（见 bridge/send-policy.mjs）。
+      const { key: dedupKey, kind: dedupKind } = dedupKeyForRequest(request);
+      if (loadSeen().some((e) => e.key === dedupKey)) {
+        log("info", "duplicate message ignored", { kind: dedupKind, key: dedupKey.slice(0, 16) + "…" });
         return {};
       }
 
@@ -310,7 +315,7 @@ function makeAgent(cfg) {
         attempts: 0,
       };
       writeFileAtomic(path.join(DIRS.queuePending, `${id}.json`), JSON.stringify(task, null, 2), 0o600);
-      markSeen(h);
+      markSeen(dedupKey);
       appendChatlog("用户", task.text || `[${mediaKind || "媒体"}消息]`);
       log("info", "task queued", { id, textLen: task.text.length, media: mediaKind || null });
       return { text: cfg.ackText, quote: sanitizeQuote(request.quote) };
@@ -343,68 +348,197 @@ async function processOutbox(bot, cfg) {
     }
     // 幂等：账本已记 sent 的不再重发。
     const ledger = loadLedger();
-    if (ledger[item.taskId]?.status === "sent") {
+    const prior = ledger[item.taskId];
+    if (prior?.status === "sent") {
       try {
         fs.renameSync(filePath, path.join(DIRS.outboxSent, name));
       } catch {}
       continue;
     }
+    // 本地可重试失败（local）耗尽次数后进 failed，不再自动重试。
     if ((item.attempts || 0) >= cfg.maxSendAttempts) {
-      saveLedgerEntry(item.taskId, { status: "failed", error: "MAX_ATTEMPTS" });
+      saveLedgerEntry(item.taskId, {
+        status: "failed",
+        error: "MAX_ATTEMPTS",
+        clientIds: item.clientIds,
+        parts: prior?.parts || {},
+      });
       try {
         fs.renameSync(filePath, path.join(DIRS.outboxFailed, name));
       } catch {}
       log("warn", "outbox item failed after max attempts", { taskId: item.taskId });
       continue;
     }
-    try {
-      const response = {};
-      if (item.text) response.text = item.text;
-      if (item.quote) response.quote = item.quote;
-      // 文字引用兜底（2026-11-12 真机验证：服务端接受 ref_msg 但微信客户端
-      // 不渲染机器人消息的引用气泡，见 docs/KNOWN_LIMITATIONS.md）。
-      // ref_msg 照常发（无害，服务端接受）；同时在正文前加一行“回「…」：”，
-      // 让用户在微信里能看到这条回复是在回哪句。进度消息无 quote，不受影响。
-      const qt = quoteTextOf(item.quote);
-      if (qt && response.text && !response.text.includes(qt.slice(0, 20))) {
-        const short = qt.length > 40 ? qt.slice(0, 40) + "…" : qt;
-        response.text = `回「${short}」：${response.text}`;
-      }
-      if (item.mediaPath) {
-        response.media = {
-          type: item.mediaType || "image",
-          url: item.mediaPath,
-          fileName: item.mediaFileName,
-        };
-      }
-      if (!response.text && !response.media) throw new Error("empty outbox item");
-      try {
-        await bot.sendMessage(response);
-      } catch (err) {
-        if (!response.quote) throw err;
-        // 引用发送被服务端拒绝时降级为普通回复，保证回复不丢失。
-        log("warn", "quoted send failed, retrying without quote", {
-          taskId: item.taskId,
-          err: String(err).slice(0, 200),
+
+    // 稳定 client_id：同一逻辑消息的每一次发送都用同一个幂等键，
+    // 意图在发起网络调用前落盘（写回 item 文件 + 账本 status=sending）。
+    const clientIds = {
+      text: stableClientId(item.taskId, "text"),
+      media: stableClientId(item.taskId, "media"),
+    };
+    if (JSON.stringify(item.clientIds) !== JSON.stringify(clientIds)) {
+      item.clientIds = clientIds;
+      item.sendState = "sending";
+      writeFileAtomic(filePath, JSON.stringify(item, null, 2), 0o600);
+    }
+    const doneParts = prior?.parts || {};
+    saveLedgerEntry(item.taskId, { status: "sending", clientIds, parts: doneParts });
+
+    // 出站白名单（v0.2 fix 3）：附件只能是 bridge/media/outbound/ 内的文件，
+    // 符号链接已解析，根目录外的路径一律拒绝发送。
+    if (item.mediaPath) {
+      const check = checkOutboundPath(item.mediaPath, DIRS.mediaOutbound);
+      if (!check.allowed) {
+        saveLedgerEntry(item.taskId, {
+          status: "failed",
+          errorClass: "policy",
+          error: `mediaPath rejected: ${check.reason}`,
+          clientIds,
+          parts: doneParts,
         });
-        const plain = { ...response };
-        delete plain.quote;
-        await bot.sendMessage(plain);
+        try {
+          fs.renameSync(filePath, path.join(DIRS.outboxFailed, name));
+        } catch {}
+        log("warn", "outbox mediaPath rejected by allowlist", {
+          taskId: item.taskId,
+          reason: check.reason,
+        });
+        continue;
       }
-      saveLedgerEntry(item.taskId, { status: "sent" });
+      item.mediaPath = check.resolved;
+    }
+
+    // 只发尚未投递的部分：文字与附件是两次独立发送，已发出的部分不再重发。
+    const wantText = Boolean(item.text) && doneParts.text?.status !== "sent";
+    const wantMedia = Boolean(item.mediaPath) && doneParts.media?.status !== "sent";
+    if (!wantText && !wantMedia) {
+      if (!item.text && !item.mediaPath) {
+        // 空 item：格式错误，直接失败，不重试。
+        saveLedgerEntry(item.taskId, {
+          status: "failed",
+          errorClass: "local",
+          error: "empty outbox item",
+          clientIds,
+          parts: doneParts,
+        });
+        try {
+          fs.renameSync(filePath, path.join(DIRS.outboxFailed, name));
+        } catch {}
+        log("warn", "outbox item empty, failed", { taskId: item.taskId });
+        continue;
+      }
+      // 全部部分已记 sent（例如上轮崩溃在写账本之前）：视为已送达，归档.
+      saveLedgerEntry(item.taskId, { status: "sent", clientIds, parts: doneParts });
       try {
         fs.renameSync(filePath, path.join(DIRS.outboxSent, name));
       } catch {}
-      appendChatlog("我", item.text || `[${response.media?.type || "媒体"}]`);
-      log("info", "outbox sent", { taskId: item.taskId, media: Boolean(response.media) });
+      continue;
+    }
+    const response = {};
+    if (wantText) response.text = item.text;
+    if (wantText && item.quote) response.quote = item.quote;
+    // 文字引用兜底（2026-11-12 真机验证：服务端接受 ref_msg 但微信客户端
+    // 不渲染机器人消息的引用气泡，见 docs/KNOWN_LIMITATIONS.md）。
+    // ref_msg 照常发（无害，服务端接受）；同时在正文前加一行“回「…」：”，
+    // 让用户在微信里能看到这条回复是在回哪句。进度消息无 quote，不受影响。
+    const qt = wantText ? quoteTextOf(item.quote) : "";
+    if (qt && response.text && !response.text.includes(qt.slice(0, 20))) {
+      const short = qt.length > 40 ? qt.slice(0, 40) + "…" : qt;
+      response.text = `回「${short}」：${response.text}`;
+    }
+    if (wantMedia) {
+      response.media = {
+        type: item.mediaType || "image",
+        url: item.mediaPath,
+        fileName: item.mediaFileName,
+      };
+    }
+
+    // 发送：SDK 返回每部分实际使用的 clientId；失败时 err.parts 带有
+    // 失败前已发出的部分，便于按部分记账、不重发已发出的部分。
+    let sendErr = null;
+    let sentParts = [];
+    try {
+      const result = await bot.sendMessage(response, { clientIds });
+      sentParts = result.parts || [];
     } catch (err) {
-      item.attempts = (item.attempts || 0) + 1;
-      item.lastError = String(err).slice(0, 300);
+      sendErr = err;
+      sentParts = err.parts || [];
+      // 引用被服务端明确拒绝、且文字部分尚未发出时，才降级为普通回复
+      // （同一 clientId，幂等）；网络/未知错误绝不补发第二条——无法确认
+      // 第一条是否已送达，补发可能造成重复。
+      if (
+        response.quote &&
+        !sentParts.some((p) => p.kind === "text") &&
+        classifySendError(err).errorClass === "server"
+      ) {
+        log("warn", "quoted send rejected, retrying without quote", {
+          taskId: item.taskId,
+          err: String(err).slice(0, 200),
+        });
+        try {
+          const plain = { ...response };
+          delete plain.quote;
+          const result2 = await bot.sendMessage(plain, { clientIds });
+          sendErr = null;
+          sentParts = [...sentParts, ...(result2.parts || [])];
+        } catch (err2) {
+          sendErr = err2;
+          sentParts = [...sentParts, ...(err2.parts || [])];
+        }
+      }
+    }
+
+    const parts = { ...doneParts };
+    for (const p of sentParts) {
+      parts[p.kind] = { status: "sent", messageId: p.messageId };
+    }
+    if (!sendErr) {
+      saveLedgerEntry(item.taskId, { status: "sent", clientIds, parts });
+      try {
+        fs.renameSync(filePath, path.join(DIRS.outboxSent, name));
+      } catch {}
+      appendChatlog("我", response.text || `[${response.media?.type || "媒体"}]`);
+      log("info", "outbox sent", { taskId: item.taskId, media: Boolean(response.media) });
+      continue;
+    }
+
+    // 失败：按错误类别处理。local（发送前失败，确定没发出去）才可重试；
+    // server / network / unknown 立即停放进 failed，绝不自动重试。
+    const cls = classifySendError(sendErr);
+    item.attempts = (item.attempts || 0) + 1;
+    item.lastError = String(sendErr).slice(0, 300);
+    if (cls.retryable) {
       writeFileAtomic(filePath, JSON.stringify(item, null, 2), 0o600);
-      saveLedgerEntry(item.taskId, { status: "unknown", error: item.lastError });
+      saveLedgerEntry(item.taskId, {
+        status: "failed",
+        errorClass: cls.errorClass,
+        error: item.lastError,
+        clientIds,
+        parts,
+        retryable: true,
+      });
       log("warn", "outbox send failed (will retry)", {
         taskId: item.taskId,
         attempts: item.attempts,
+        errorClass: cls.errorClass,
+        err: item.lastError,
+      });
+    } else {
+      saveLedgerEntry(item.taskId, {
+        status: cls.errorClass === "server" ? "failed" : "unknown",
+        errorClass: cls.errorClass,
+        error: item.lastError,
+        clientIds,
+        parts,
+        needsManualCheck: cls.errorClass !== "server",
+      });
+      try {
+        fs.renameSync(filePath, path.join(DIRS.outboxFailed, name));
+      } catch {}
+      log("warn", "outbox send parked (no auto-retry)", {
+        taskId: item.taskId,
+        errorClass: cls.errorClass,
         err: item.lastError,
       });
     }

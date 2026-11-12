@@ -37,3 +37,15 @@
 ## 工具安装 — 全部通过
 
 见 `docs/TOOLS_INVENTORY.md`。apt 工具、typst/tectonic、venv Python 库均已冒烟测试通过。
+
+## v0.2 第一批修复 — 代码已改 + 单元测试通过，待真机发送验证
+
+见 `docs/KNOWN_LIMITATIONS.md` 末节。2026-11-12 19:45，用户确认先修最危险的三项：
+
+| 修复 | 代码 | 验证 |
+| ---- | ---- | ---- |
+| 发送账本：稳定 client_id + 错误分类 + 分段投递状态 | `bridge/send-policy.mjs`、`bridge/bridge.mjs`（`processOutbox`）、SDK `send.ts` / `send-media.ts` / `bot.ts`（clientIds 透传、parts 回传、上传失败标记） | `node --test bridge/send-policy.test.mjs` 6/6 通过；`node --check bridge/bridge.mjs` 通过；SDK `tsc --noEmit` 通过，`transport/dist` 已重建并核对含新代码 |
+| 去重改用 msg_id，内容哈希仅作 30 秒兜底 | `bridge/send-policy.mjs`（`dedupKeyForRequest`）、`bridge/bridge.mjs`（`makeAgent.chat`） | 同上（单元测试覆盖 msg_id / 兜底 / TTL） |
+| 出站 mediaPath 白名单（仅 `bridge/media/outbound/`，解析符号链接） | `bridge/send-policy.mjs`（`checkOutboundPath`）、`bridge/bridge.mjs`（`processOutbox` 发送前校验） | 同上（单元测试覆盖根目录内 / 根目录外 / 符号链接逃逸 / 不存在文件） |
+
+真机验证：桥接重启后以一条真实微信通知验证新发送路径（见下一次更新）。

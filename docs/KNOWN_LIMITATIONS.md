@@ -41,3 +41,10 @@
 - Hook 脚本无凭据、无连接器访问；所有需要凭据的操作都在 worker 回合里做。
 - 单 Owner 白名单；私聊 only，不支持群聊。
 - 桥接进程与 Hook 驱动以共享锁互斥；不要同时再起一个 daemon。
+
+## v0.2 第一批修复（2026-11-12 19:45，用户确认修最危险的三项）
+
+- **发送账本（已修）**：同一逻辑消息的每一次发送共用一个稳定 client_id（`stableClientId(taskId, part)`，见 `bridge/send-policy.mjs`），意图在网络调用前落盘（item 文件 + 账本 `status=sending`）；文字与附件是两次独立发送，账本按部分记 `parts.{text,media}.status`，已发出的部分不再重发；引用降级只在服务端明确拒绝且文字部分尚未发出时才执行（同一 clientId）。失败分四类：`local`（发送前失败，确定没发出去）才可重试（最多 3 次）；`server`（服务端明确拒绝，带 errcode）立即停放；`network` / `unknown`（没收到回执，是否发出未知）立即停放、**绝不自动重试**，需人工核对（问用户收到了没有）。单元测试 `bridge/send-policy.test.mjs` 6 项通过；`node --check` 通过；SDK `tsc --noEmit` 通过并已重建 `transport/dist`。
+- **去重（已修）**：去重键改用服务端 msg_id（`request.quote.msg_id`，即产生正文的那条原消息的 id），内容哈希只作无 msg_id 时的兜底，且窗口只有 30 秒（长轮询重投发生在数秒内；msg_id 键保留 1 小时，id 永不复用）。用户正常重发相同问候不再被吞掉。
+- **出站白名单（已修）**：`processOutbox` 发送前强制校验 `mediaPath`，只有 `bridge/media/outbound/` 内的文件能发（先解析符号链接再比对，根目录外、不存在的文件一律拒绝，记账本 `errorClass=policy` 并进 failed）。`~/.config/gh/hosts.yml` 这类敏感文件再也发不出去。
+- **残留风险**：服务端是否真的按 client_id 去重，未独立验证（假设成立；18:37 的重复是另一机制——重入竞态，18:42 已修）。`unknown` 停放后的人工核对流程依赖 worker 主动问用户，没有自动回执查询接口。

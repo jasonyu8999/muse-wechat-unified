@@ -20,37 +20,53 @@ export async function sendWeixinMediaFile(params: {
   text: string;
   opts: WeixinApiOptions & { contextToken?: string };
   cdnBaseUrl: string;
-}): Promise<{ messageId: string }> {
+  clientIds?: { text?: string; media?: string };
+}): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
   const { filePath, to, text, opts, cdnBaseUrl } = params;
   const mime = getMimeFromFilename(filePath);
   const uploadOpts: WeixinApiOptions = { baseUrl: opts.baseUrl, token: opts.token };
 
+  // Upload failures happen before any message bytes are sent, so they are
+  // provably safe to retry. Mark them explicitly so callers can tell an
+  // upload failure (nothing delivered) from a send failure (unknown).
+  const upload = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      throw new Error(`media upload failed: ${String(err)}`);
+    }
+  };
+
   if (mime.startsWith("video/")) {
     logger.info(`[weixin] sendWeixinMediaFile: uploading video filePath=${filePath} to=${to}`);
-    const uploaded = await uploadVideoToWeixin({
-      filePath,
-      toUserId: to,
-      opts: uploadOpts,
-      cdnBaseUrl,
-    });
+    const uploaded = await upload(() =>
+      uploadVideoToWeixin({
+        filePath,
+        toUserId: to,
+        opts: uploadOpts,
+        cdnBaseUrl,
+      }),
+    );
     logger.info(
       `[weixin] sendWeixinMediaFile: video upload done filekey=${uploaded.filekey} size=${uploaded.fileSize}`,
     );
-    return sendVideoMessageWeixin({ to, text, uploaded, opts });
+    return sendVideoMessageWeixin({ to, text, uploaded, opts, clientIds: params.clientIds });
   }
 
   if (mime.startsWith("image/")) {
     logger.info(`[weixin] sendWeixinMediaFile: uploading image filePath=${filePath} to=${to}`);
-    const uploaded = await uploadFileToWeixin({
-      filePath,
-      toUserId: to,
-      opts: uploadOpts,
-      cdnBaseUrl,
-    });
+    const uploaded = await upload(() =>
+      uploadFileToWeixin({
+        filePath,
+        toUserId: to,
+        opts: uploadOpts,
+        cdnBaseUrl,
+      }),
+    );
     logger.info(
       `[weixin] sendWeixinMediaFile: image upload done filekey=${uploaded.filekey} size=${uploaded.fileSize}`,
     );
-    return sendImageMessageWeixin({ to, text, uploaded, opts });
+    return sendImageMessageWeixin({ to, text, uploaded, opts, clientIds: params.clientIds });
   }
 
   // File attachment: pdf, doc, zip, etc.
@@ -58,15 +74,17 @@ export async function sendWeixinMediaFile(params: {
   logger.info(
     `[weixin] sendWeixinMediaFile: uploading file attachment filePath=${filePath} name=${fileName} to=${to}`,
   );
-  const uploaded = await uploadFileAttachmentToWeixin({
-    filePath,
-    fileName,
-    toUserId: to,
-    opts: uploadOpts,
-    cdnBaseUrl,
-  });
+  const uploaded = await upload(() =>
+    uploadFileAttachmentToWeixin({
+      filePath,
+      fileName,
+      toUserId: to,
+      opts: uploadOpts,
+      cdnBaseUrl,
+    }),
+  );
   logger.info(
     `[weixin] sendWeixinMediaFile: file upload done filekey=${uploaded.filekey} size=${uploaded.fileSize}`,
   );
-  return sendFileMessageWeixin({ to, text, fileName, uploaded, opts });
+  return sendFileMessageWeixin({ to, text, fileName, uploaded, opts, clientIds: params.clientIds });
 }

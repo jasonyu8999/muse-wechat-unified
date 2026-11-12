@@ -87,19 +87,22 @@ function buildSendMessageReq(params: {
 /**
  * Send a plain text message downstream.
  * contextToken is required for all reply sends; missing it breaks conversation association.
+ * Pass clientId to reuse a stable idempotency key across retries of the same
+ * logical message; otherwise a fresh one is generated (previous behaviour).
  */
 export async function sendMessageWeixin(params: {
   to: string;
   text: string;
   opts: WeixinApiOptions & { contextToken?: string };
   quote?: MessageItem;
+  clientId?: string;
 }): Promise<{ messageId: string }> {
   const { to, text, opts, quote } = params;
   if (!opts.contextToken) {
     logger.error(`sendMessageWeixin: contextToken missing, refusing to send to=${to}`);
     throw new Error("sendMessageWeixin: contextToken is required");
   }
-  const clientId = generateClientId();
+  const clientId = params.clientId ?? generateClientId();
   const req = buildSendMessageReq({
     to,
     contextToken: opts.contextToken,
@@ -124,6 +127,11 @@ export async function sendMessageWeixin(params: {
 /**
  * Send one or more MessageItems (optionally preceded by a text caption) downstream.
  * Each item is sent as its own request so that item_list always has exactly one entry.
+ * Pass clientIds to reuse stable idempotency keys per part across retries.
+ * Returns the clientId used for every part. If a later part fails, the thrown
+ * error carries a `parts` array with the parts that already went out, so the
+ * caller can record per-part delivery status instead of retrying the whole
+ * message (which would duplicate the parts that succeeded).
  */
 async function sendMediaItems(params: {
   to: string;
@@ -131,7 +139,8 @@ async function sendMediaItems(params: {
   mediaItem: MessageItem;
   opts: WeixinApiOptions & { contextToken?: string };
   label: string;
-}): Promise<{ messageId: string }> {
+  clientIds?: { text?: string; media?: string };
+}): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
   const { to, text, mediaItem, opts, label } = params;
 
   const items: MessageItem[] = [];
@@ -141,8 +150,10 @@ async function sendMediaItems(params: {
   items.push(mediaItem);
 
   let lastClientId = "";
+  const parts: Array<{ kind: string; messageId: string }> = [];
   for (const item of items) {
-    lastClientId = generateClientId();
+    const kind = item.type === MessageItemType.TEXT ? "text" : "media";
+    lastClientId = params.clientIds?.[kind] ?? generateClientId();
     const req: SendMessageReq = {
       msg: {
         from_user_id: "",
@@ -161,16 +172,19 @@ async function sendMediaItems(params: {
         timeoutMs: opts.timeoutMs,
         body: req,
       });
+      parts.push({ kind, messageId: lastClientId });
     } catch (err) {
       logger.error(
         `${label}: failed to=${to} clientId=${lastClientId} err=${String(err)}`,
       );
-      throw err;
+      const wrapped = err instanceof Error ? err : new Error(String(err));
+      (wrapped as unknown as { parts: Array<{ kind: string; messageId: string }> }).parts = parts;
+      throw wrapped;
     }
   }
 
   logger.debug(`${label}: success to=${to} clientId=${lastClientId}`);
-  return { messageId: lastClientId };
+  return { messageId: lastClientId, parts };
 }
 
 /**
@@ -187,7 +201,8 @@ export async function sendImageMessageWeixin(params: {
   text: string;
   uploaded: UploadedFileInfo;
   opts: WeixinApiOptions & { contextToken?: string };
-}): Promise<{ messageId: string }> {
+  clientIds?: { text?: string; media?: string };
+}): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
   const { to, text, uploaded, opts } = params;
   if (!opts.contextToken) {
     logger.error(`sendImageMessageWeixin: contextToken missing, refusing to send to=${to}`);
@@ -209,7 +224,7 @@ export async function sendImageMessageWeixin(params: {
     },
   };
 
-  return sendMediaItems({ to, text, mediaItem: imageItem, opts, label: "sendImageMessageWeixin" });
+  return sendMediaItems({ to, text, mediaItem: imageItem, opts, label: "sendImageMessageWeixin", clientIds: params.clientIds });
 }
 
 /**
@@ -222,7 +237,8 @@ export async function sendVideoMessageWeixin(params: {
   text: string;
   uploaded: UploadedFileInfo;
   opts: WeixinApiOptions & { contextToken?: string };
-}): Promise<{ messageId: string }> {
+  clientIds?: { text?: string; media?: string };
+}): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
   const { to, text, uploaded, opts } = params;
   if (!opts.contextToken) {
     logger.error(`sendVideoMessageWeixin: contextToken missing, refusing to send to=${to}`);
@@ -241,7 +257,7 @@ export async function sendVideoMessageWeixin(params: {
     },
   };
 
-  return sendMediaItems({ to, text, mediaItem: videoItem, opts, label: "sendVideoMessageWeixin" });
+  return sendMediaItems({ to, text, mediaItem: videoItem, opts, label: "sendVideoMessageWeixin", clientIds: params.clientIds });
 }
 
 /**
@@ -255,7 +271,8 @@ export async function sendFileMessageWeixin(params: {
   fileName: string;
   uploaded: UploadedFileInfo;
   opts: WeixinApiOptions & { contextToken?: string };
-}): Promise<{ messageId: string }> {
+  clientIds?: { text?: string; media?: string };
+}): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
   const { to, text, fileName, uploaded, opts } = params;
   if (!opts.contextToken) {
     logger.error(`sendFileMessageWeixin: contextToken missing, refusing to send to=${to}`);
@@ -274,5 +291,5 @@ export async function sendFileMessageWeixin(params: {
     },
   };
 
-  return sendMediaItems({ to, text, mediaItem: fileItem, opts, label: "sendFileMessageWeixin" });
+  return sendMediaItems({ to, text, mediaItem: fileItem, opts, label: "sendFileMessageWeixin", clientIds: params.clientIds });
 }

@@ -177,8 +177,15 @@ export class Bot {
    *
    * Requires at least one inbound message to have been received so that a
    * valid `context_token` is cached (tokens are valid for ~24 hours).
+   *
+   * Pass `opts.clientIds` to reuse stable idempotency keys per part across
+   * retries of the same logical message. Returns the clientId used for
+   * every part, so callers can record per-part delivery status.
    */
-  async sendMessage(message: string | ChatResponse): Promise<void> {
+  async sendMessage(
+    message: string | ChatResponse,
+    opts?: { clientIds?: { text?: string; media?: string } },
+  ): Promise<{ messageId: string; parts: Array<{ kind: string; messageId: string }> }> {
     const response: ChatResponse =
       typeof message === "string" ? { text: message } : message;
 
@@ -206,24 +213,25 @@ export class Bot {
       } else {
         filePath = path.isAbsolute(mediaUrl) ? mediaUrl : path.resolve(mediaUrl);
       }
-      await sendWeixinMediaFile({
+      return sendWeixinMediaFile({
         filePath,
         to: this._userId,
         text: response.text ? markdownToPlainText(response.text) : "",
         opts: apiOpts,
         cdnBaseUrl: this._cdnBaseUrl,
+        clientIds: opts?.clientIds,
       });
-      return;
     }
 
     if (response.text) {
-      await sendMessageWeixin({
+      const result = await sendMessageWeixin({
         to: this._userId,
         text: markdownToPlainText(response.text),
         opts: apiOpts,
         quote: response.quote,
+        clientId: opts?.clientIds?.text,
       });
-      return;
+      return { messageId: result.messageId, parts: [{ kind: "text", messageId: result.messageId }] };
     }
 
     throw new Error("消息必须包含 text 或 media");

@@ -6,7 +6,7 @@
 ## 1. 认领
 
 1. 列出 `~/workspace/muse-wechat-unified/bridge/queue/pending/` 的任务文件（按修改时间从旧到新）。
-2. 开工前先扫 `bridge/outbox/failed/`：把里面的文件 `attempts` 归零后移回 `outbox/`（桥接重启会丢内存里的 context_token，重启后首批回复可能因此发送失败进 failed；用户下一条消息进来、token 恢复后由这次扫描补发）。不要删除 failed 里的文件。
+2. 开工前先扫 `bridge/outbox/failed/`：先查 `bridge/data/send-ledger.json` 里对应 taskId 的 `errorClass`，再决定能不能补发——**只有 `local`（发送前失败，确定没发出去，如凭证丢失、附件上传失败）可以把 `attempts` 归零后移回 `outbox/`**；`server`（服务端明确拒绝，如 errcode=-2）要先修好原因再补发；`unknown` / `network`（没收到回执，是否发出未知）**绝不直接补发**，先问用户那条消息收到了没有，确认没收到再补发（补发时沿用原来的 clientId，不会重复）；`policy`（路径白名单拒绝）不要补发，先修路径。不要删除 failed 里的文件。
 2. 每次只认领一个：`mv pending/<id>.json processing/<id>.json`（原子操作；抢不到就安静退出）。
 3. 认领后立即 `touch processing/<id>.json`，长耗时工作期间约每 60 秒再 touch 一次（租约 10 分钟，停 touch 会被回收重做）。
 4. 认领后立即发进度消息：写 `outbox/<id>-progress.json`，`taskId` 用 `<id>-progress`（与最终回复的 taskId 不同，避免账本幂等拦截），正文一句话说明正在处理什么，例如“收到，正在处理：……”。桥接约 5 秒内发出。最终回复写完后再正常写 `outbox/<id>.json`。
@@ -30,7 +30,7 @@
   有图片/文件要回传时加：`"mediaPath": "<绝对路径>", "mediaType": "image|video|file", "mediaFileName": "xxx.png"`。
 - 引用回复：任务 JSON 里有 `quote` 字段时，文字回复默认带上它（`"quote": <任务里的 quote 原样>`），桥接会把原消息作为引用挂在回复上；服务端不接受时自动降级为普通回复，不会丢消息。`quote` 只在任务到达时就已记录才有，缺失就直接普通回复，不要编造。
 - 回复风格：中文，先给结论再说细节；微信消息要简短，完整内容（报告、表格、长代码）放附件，正文只留摘要。
-- 附件必须存在于任务目录或 `media/outbound/<id>/` 内，写绝对路径；不要只发内部路径而不发文件。
+- 附件必须存在于任务目录或 `media/outbound/<id>/` 内，写绝对路径；不要只发内部路径而不发文件。桥接会强制校验：只有 `bridge/media/outbound/` 内的文件能发出去，根目录外的路径（包括符号链接指到外面、不存在的文件）一律拒绝发送并记入账本；不要试图绕过。
 - 写完 outbox 后把任务文件 `mv processing/<id>.json done/<id>.json`。
 - 执行失败：写 outbox 说明真实失败原因（不要编造成功），任务文件进 `failed/`，并在 JSON 里留 `error` 字段。
 
