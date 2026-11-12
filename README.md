@@ -86,6 +86,5 @@ bash stop-bridge.sh
 
 ## 许可
 
-本项目自有代码的许可证尚未确定，公开前需定。第三方部分各自遵循原许可：
+本项目自有代码采用 GNU General Public License v3.0（见根目录 `LICENSE`），Copyright © 2026 jasonyu8999。第三方部分各自遵循原许可：
 `weixin-agent-sdk`（MIT）、项目 A 参考代码（MIT，见 `research/project-a/LICENSE`）。
-在许可证确定之前，**请勿公开本仓库**。
