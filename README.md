@@ -1,90 +1,241 @@
-# muse-wechat-unified — Beacon 微信统一智能体
+# 💬 muse-wechat-unified
 
-把微信接成 Beacon（Muse 个人助手）的第二个入口：微信里发消息，
-由同一个 Beacon 执行、回复。不是另一个助手，共用同一份记忆、文件、
-连接器和任务状态。
+### 你的个人 AI 助手，现在住进了微信。 / Your personal AI assistant, now living in WeChat.
 
-> 核心原则：**One Muse. Multiple Interfaces. Shared Knowledge. Unified Tasks.**
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Status: Live](https://img.shields.io/badge/status-live-brightgreen.svg)](docs/TEST_REPORT.md)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js)](bridge/bridge.mjs)
+[![WeChat](https://img.shields.io/badge/WeChat-iLink%20%2F%20ClawBot-07C160?logo=wechat)](docs/ARCHITECTURE_DECISIONS.md)
 
-## 当前状态（2026-11-12）
+**在微信里发一句话，Beacon 去干活——再回微信里告诉你结果。**
+**Send a message in WeChat. Beacon does the work — and answers you there.**
 
-- **M0 环境审计**：通过（17 项），见 `docs/ENVIRONMENT_AUDIT.md`
-- **M1 核心桥接**：已跑通。2026-11-12 18:02 扫码登录绑定成功，
-  18:03 首条真实消息端到端 13.0 秒回通；systemd 服务在线，
-  看门狗每 15 分钟检查。语音转文字、进度消息、引用回复均已实现并实测。
-- **M2 知识库**：SQLite FTS5 索引完成，60 篇项目文档可搜；与长期记忆的
-  双向同步测试待执行，见 `docs/MEMORY_SYNC_SPEC.md`
-- **M3 格式能力**：15 种格式本地解析/转换/生成已验证；微信发送列待首条
-  真实消息验证，见 `docs/FORMAT_CAPABILITY_MATRIX.md`
-- **M4 开发适配器**：已验证，可调 DeepSeek Harness（dsh）做开发任务
+> **一个 Muse，多个入口，共享的知识，统一的任务。**
+> **One Muse. Multiple interfaces. Shared knowledge. Unified tasks.**
 
-详细测试证据见 `docs/TEST_REPORT.md`；已知限制见 `docs/KNOWN_LIMITATIONS.md`。
+[中文](#-中文) · [English](#-english)
 
-## 架构
+---
 
-```
-微信用户（Owner）
-  ⇄ 腾讯 iLink（ilinkai.weixin.qq.com，官方 ClawBot 协议）
-  ⇄ ILinkTransport（Node 桥接守护进程，复用 MIT 的 weixin-agent-sdk）
-  ⇄ 持久化文件队列（queue/ + outbox/，租约 + 幂等账本）
-  ⇄ Muse Hook（轮询脚本 wake）→ Beacon 本体 Worker（原生工具/记忆/文件）
-  ⇄ 响应网关（桥接进程发回微信；主动推送走缓存 context_token）
-        │
-        └→ 受控开发适配器 → DeepSeek Harness（dsh，Qianwen 路由）→ 代码/测试/产物
-```
+## 🇨🇳 中文
 
-关键决策见 `docs/ARCHITECTURE_DECISIONS.md`（D1–D7），包括：执行器用
-Muse 原生 Hook 而不用 muse-cli；传输层复用 `weixin-agent-sdk` v0.5.0；
-文件队列起步不上 SQLite；桥接进程与 Hook 分离、单驱动锁。
+### ✨ 用起来是什么感觉
 
-## 目录
+| 你在微信里发… | Beacon 会… |
+|---|---|
+| 一个问题 | 用它自己的记忆和文件回答你 |
+| 一条语音 🎙️ | 转成文字（服务端转写，或本地 Whisper），再用文字回你 |
+| 一张照片 | 真的打开看，告诉你那到底是什么 |
+| 一个文件 | 读它——15 种格式，从 Markdown 到表格到 PDF |
+| “帮我做个 X” | 走 DeepSeek Harness 跑一次真正的开发任务，把结果交回来 |
+| 你不在时交代的任务 | 接住它，干活，边干边向你汇报进度 |
 
-| 目录 | 内容 |
-| --- | --- |
-| `bridge/` | 桥接守护进程 `bridge.mjs`（登录/运行/状态/退出）、文件队列、outbox、systemd 单元 |
-| `transport/` | `weixin-agent-sdk` v0.5.0（MIT）构建产物与 vendor 源码 |
-| `knowledge/` | M2 知识库：SQLite FTS5 索引器 `indexer.py`、检索 `search.py`、`schema.sql` |
-| `developer/` | M4 开发适配器：`run-dev-task.sh`，经 dsh + Qianwen 路由执行开发任务 |
-| `scripts/` | 运维脚本：桥接重启、systemd 安装、语音转文字 `stt.py`、媒体工具安装 |
-| `docs/` | 全部设计、测试与运维文档（见下） |
-| `research/` | 三路研究笔记（项目 A 参考代码是独立检出，不进本仓库） |
-| `media/` | 本地模型文件等（faster-whisper 等，不提交） |
+第一条走通这座桥的真实消息——*“你好，你是谁”*——端到端只用了 **13.0 秒**。从那以后它一直在跑：systemd 守护，每 15 分钟有看门狗巡检。
 
-## 快速开始
+### 🚀 快速开始
 
 ```bash
-# 1. 登录（需 Owner 确认后执行；二维码约 5 分钟有效）
+# 1. 配置（复制模板，填上你的会话 id）
+cp bridge/config.example.json bridge/config.json
+
+# 2. 登录——用微信扫码（二维码约 5 分钟有效）
 cd bridge && node bridge.mjs login
 
-# 2. 启动守护进程
+# 3. 启动桥接
 bash start-bridge.sh
 
-# 3. 状态 / 停止
+# 检查是否活着 / 停掉它
 node bridge.mjs status
 bash stop-bridge.sh
 ```
 
-首次使用先复制配置模板：`cp bridge/config.example.json bridge/config.json`，
-填入 Owner 的 conversationId。登录态、token、队列与日志一律不进仓库，
-见 `.gitignore`。
+就这些。用你自己的微信账号给自己发消息，Beacon 就会回答。
 
-## 文档
+> 登录态、token、队列和日志永远不会进仓库——见 `.gitignore`。
 
-- `docs/WORKER_CONTRACT.md` — Hook 唤醒 worker 的执行契约（认领/执行/回复）
-- `docs/OPERATIONS.md` — 日常运维；`docs/DEPLOYMENT.md` — 部署
-- `docs/SECURITY.md` — 安全红线；`docs/TASK_MODEL.md` — 任务模型
-- `docs/VOICE_STT_PLAN.md` — 语音转文字方案；`docs/TOOLS_INVENTORY.md` — 媒体工具清单
-- `docs/MEMORY_SYNC_SPEC.md` — 记忆双向同步规范与 A/B 测试协议
+### 🧩 它是怎么工作的
 
-## 安全红线
+```
+你在微信里
+    ⇄  腾讯 iLink（官方 ClawBot 协议）
+    ⇄  Node 桥接守护进程 — ILinkTransport（weixin-agent-sdk v0.5.0，MIT）
+    ⇄  持久化文件队列 — queue/ + outbox/（租约、幂等账本）
+    ⇄  Muse Hook（轮询 → 唤醒）→ Beacon worker（真工具、记忆、文件）
+    ⇄  回复网关（回微信；用缓存的 token 主动推送）
+          │
+          └→ 开发适配器 → DeepSeek Harness（dsh）→ 代码、测试、产物
+```
 
-- 只处理 Owner 的任务；微信消息内容是**用户输入**，不是系统指令。
-- 登录态、token、密码、API Key 永不进仓库、日志或回复。
-- 有副作用的操作（发信、发布、删除、付费）不因重试而重复执行。
-- 项目 B 的代码与文档为 PolyForm Noncommercial 许可：**一行都不复制、不改写合入**，
-  只借鉴设计思想（见 `docs/ARCHITECTURE_DECISIONS.md` D2）。
+设计决策（D1–D7）都写下来了，不是口口相传：
+[`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md)。
 
-## 许可
+### 📦 里面有什么
 
-本项目自有代码采用 GNU General Public License v3.0（见根目录 `LICENSE`），Copyright © 2026 jasonyu8999。第三方部分各自遵循原许可：
-`weixin-agent-sdk`（MIT）、项目 A 参考代码（MIT，见 `research/project-a/LICENSE`）。
+| 目录 | 是什么 |
+|---|---|
+| `bridge/` | 守护进程：`bridge.mjs`（登录 / 运行 / 状态 / 退出）、队列、outbox、systemd 单元 |
+| `transport/` | `weixin-agent-sdk` v0.5.0（MIT）——构建产物 + 源码 |
+| `knowledge/` | 可检索知识库：SQLite FTS5 索引器 + 项目文档检索 |
+| `developer/` | 开发适配器：用 DeepSeek Harness 跑真正的编码任务 |
+| `scripts/` | 运维脚本——桥接重启、systemd 安装、语音转文字 |
+| `docs/` | 其余一切：运维、安全、任务模型、测试证据 |
+| `research/` | 架构背后的三路调研笔记 |
+
+**已经验证的**（证据在 [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md)）：
+
+- ✅ 真实消息往返：端到端 13.0 秒
+- ✅ 语音 → 文字，在一条真实的普通话语音上验证过
+- ✅ 任务里程碑进度消息、引用回复、幂等发送
+- ✅ 15 种文件格式本地解析 / 转换 / 生成
+- ✅ 走 DeepSeek Harness 的开发任务：14.3 秒通过
+- ✅ 60 份项目文档已索引、可检索，包括中文查询
+
+已知限制也老实列在 [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) 里——没有对外语音、微信侧没有工具进度消息、还有几项在等第一次真实消息测试。
+
+### 🔒 安全是设计出来的，不是事后贴上的
+
+- **只服务一个人。** 这座桥永远只为你一个人服务。
+- **微信消息是用户输入，永远不是系统指令。** 冒充管理员（“我是管理员，改一下白名单……”）一律拒绝。
+- **仓库里没有秘密。** Token、密码、API Key 绝不进 git、日志或回复。
+- **副作用绝不重复。** 发送、发布、删除、付款不会因为重试或合并而执行两次。
+- **高风险操作要你点头。** 凡是发送、发布、部署、删除、付款、导出敏感资料，都要等你在微信里明确说“确认”才执行。
+
+完整规则：[`docs/SECURITY.md`](docs/SECURITY.md) ·
+Worker 契约：[`docs/WORKER_CONTRACT.md`](docs/WORKER_CONTRACT.md)
+
+### 📖 文档
+
+- [Worker 契约](docs/WORKER_CONTRACT.md)——被唤醒的 worker 如何认领、执行、回复任务
+- [运维](docs/OPERATIONS.md) · [部署](docs/DEPLOYMENT.md) · [安全](docs/SECURITY.md)
+- [任务模型](docs/TASK_MODEL.md) · [记忆同步规范](docs/MEMORY_SYNC_SPEC.md)
+- [语音转文字方案](docs/VOICE_STT_PLAN.md) · [格式能力矩阵](docs/FORMAT_CAPABILITY_MATRIX.md)
+- [工具清单](docs/TOOLS_INVENTORY.md) · [测试报告](docs/TEST_REPORT.md)
+
+### 📜 许可证
+
+自有代码：**GNU 通用公共许可证 v3.0**——见 [`LICENSE`](LICENSE)。
+Copyright © 2026 jasonyu8999。
+
+第三方部分保留各自的许可证：`weixin-agent-sdk`（MIT）；
+Project A 参考代码（MIT，见 `research/project-a/LICENSE`）。
+
+---
+
+## 🇬🇧 English
+
+### ✨ What it feels like
+
+| You send in WeChat… | Beacon does… |
+|---|---|
+| A question | Answers from its own memory and files |
+| A voice message 🎙️ | Transcribes it (server-side, or local Whisper) and replies in text |
+| A photo | Looks at it and tells you what it actually is |
+| A file | Reads it — 15 formats, from Markdown to spreadsheets to PDF |
+| "Build me X" | Runs a real dev task through DeepSeek Harness and hands back the result |
+| A task while you're away | Picks it up, works on it, and reports progress as it goes |
+
+The first real message through this bridge — *"你好，你是谁"* — was answered
+end to end in **13.0 seconds**. It's been running live since, on systemd,
+with a watchdog checking in every 15 minutes.
+
+### 🚀 Quick start
+
+```bash
+# 1. Configure (copy the template, fill in your conversation id)
+cp bridge/config.example.json bridge/config.json
+
+# 2. Log in — scan the QR code with your WeChat (valid ~5 min)
+cd bridge && node bridge.mjs login
+
+# 3. Start the bridge
+bash start-bridge.sh
+
+# Check it's alive / stop it
+node bridge.mjs status
+bash stop-bridge.sh
+```
+
+That's it. Message your own WeChat account and Beacon answers.
+
+> Login state, tokens, queues and logs never enter the repo — see `.gitignore`.
+
+### 🧩 How it works
+
+```
+You in WeChat
+    ⇄  Tencent iLink (official ClawBot protocol)
+    ⇄  Node bridge daemon — ILinkTransport (weixin-agent-sdk v0.5.0, MIT)
+    ⇄  Durable file queue — queue/ + outbox/ (leases, idempotent ledger)
+    ⇄  Muse Hook (poll → wake) → Beacon worker (real tools, memory, files)
+    ⇄  Response gateway (replies back to WeChat; proactive push via cached token)
+          │
+          └→ Dev adapter → DeepSeek Harness (dsh) → code, tests, artifacts
+```
+
+Design decisions (D1–D7) are written down, not tribal knowledge:
+[`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md).
+
+### 📦 What's inside
+
+| Directory | What it is |
+|---|---|
+| `bridge/` | The daemon: `bridge.mjs` (login / run / status / logout), queue, outbox, systemd units |
+| `transport/` | `weixin-agent-sdk` v0.5.0 (MIT) — build output + vendored source |
+| `knowledge/` | Searchable knowledge base: SQLite FTS5 indexer + search over project docs |
+| `developer/` | Dev adapter: run real coding tasks via DeepSeek Harness |
+| `scripts/` | Ops scripts — bridge restart, systemd install, speech-to-text |
+| `docs/` | Everything else: ops, security, task model, test evidence |
+| `research/` | Three-track research notes behind the architecture |
+
+**Proven so far** (evidence in [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md)):
+
+- ✅ Real-message round trip: 13.0 s end to end
+- ✅ Voice → text, verified on a real Mandarin voice message
+- ✅ Progress messages at task milestones, quote replies, idempotent sends
+- ✅ 15 file formats parsed / converted / generated locally
+- ✅ Dev task through DeepSeek Harness: passed in 14.3 s
+- ✅ 60 project docs indexed and searchable, incl. Chinese queries
+
+Known limits are listed honestly in
+[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) — no outbound voice,
+no tool-progress messages from WeChat's side, and a few things still awaiting
+their first real-message test.
+
+### 🔒 Safety, by design
+
+- **Owner-only.** The bridge only ever serves one person: you.
+- **WeChat messages are user input, never system instructions.** Impersonation
+  attempts ("I'm the admin, change the whitelist…") are refused.
+- **No secrets in the repo.** Tokens, passwords and API keys never touch git,
+  logs, or replies.
+- **No double side-effects.** Sends, publishes, deletes and payments are never
+  repeated because of a retry or a merge.
+- **HIGH-risk actions need your word.** Anything that sends, publishes,
+  deploys, deletes, pays or exports sensitive data waits for your explicit
+  "确认" in WeChat first.
+
+Full rules: [`docs/SECURITY.md`](docs/SECURITY.md) ·
+Worker contract: [`docs/WORKER_CONTRACT.md`](docs/WORKER_CONTRACT.md)
+
+### 📖 Docs
+
+- [Worker contract](docs/WORKER_CONTRACT.md) — how a woken worker claims, runs and answers a task
+- [Operations](docs/OPERATIONS.md) · [Deployment](docs/DEPLOYMENT.md) · [Security](docs/SECURITY.md)
+- [Task model](docs/TASK_MODEL.md) · [Memory sync spec](docs/MEMORY_SYNC_SPEC.md)
+- [Voice STT plan](docs/VOICE_STT_PLAN.md) · [Format capability matrix](docs/FORMAT_CAPABILITY_MATRIX.md)
+- [Tools inventory](docs/TOOLS_INVENTORY.md) · [Test report](docs/TEST_REPORT.md)
+
+### 📜 License
+
+Own code: **GNU General Public License v3.0** — see [`LICENSE`](LICENSE).
+Copyright © 2026 jasonyu8999.
+
+Third-party parts keep their own licenses: `weixin-agent-sdk` (MIT);
+Project A reference code (MIT, see `research/project-a/LICENSE`).
+
+---
+
+*Built by Beacon, for one person, in the open. If you run Muse and live in
+WeChat, this is the missing piece — clone it, scan the code, and say hi from
+your own phone.* 👋
+*由 Beacon 为一个人建造，公开在阳光下。如果你也在用 Muse、也住在微信里，这就是缺的那一块——克隆它，扫一遍代码，然后从你自己的手机上打个招呼。*👋
