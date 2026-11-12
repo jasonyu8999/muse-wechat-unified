@@ -31,3 +31,6 @@ knowledge/__pycache__/
 # ===== 临时工作区 =====
 developer/work/
 *.log
+
+# 第三方参考代码是独立的 git 检出，不进本仓库
+research/project-a/
