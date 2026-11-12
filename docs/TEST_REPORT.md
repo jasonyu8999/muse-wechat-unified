@@ -48,4 +48,4 @@
 | 去重改用 msg_id，内容哈希仅作 30 秒兜底 | `bridge/send-policy.mjs`（`dedupKeyForRequest`）、`bridge/bridge.mjs`（`makeAgent.chat`） | 同上（单元测试覆盖 msg_id / 兜底 / TTL） |
 | 出站 mediaPath 白名单（仅 `bridge/media/outbound/`，解析符号链接） | `bridge/send-policy.mjs`（`checkOutboundPath`）、`bridge/bridge.mjs`（`processOutbox` 发送前校验） | 同上（单元测试覆盖根目录内 / 根目录外 / 符号链接逃逸 / 不存在文件） |
 
-真机验证：桥接重启后以一条真实微信通知验证新发送路径（见下一次更新）。
+真机验证：桥接重启（19:51:48，pid 29783）后以一条真实微信通知验证新发送路径——通知已发出，账本记 `sent`，`parts.text.status=sent`，使用的 messageId 为稳定 clientId（`openclaw-weixin:<sha256>`，非随机）。重启后无新增 getUpdates 错误（总数仍为 43），token 文件完好。
