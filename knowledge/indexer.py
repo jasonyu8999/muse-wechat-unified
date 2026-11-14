@@ -24,6 +24,12 @@ import sys
 MAX_TEXT_CHARS = 1_000_000
 TEXT_EXTS = {".md", ".markdown", ".txt", ".csv", ".json", ".py", ".js", ".ts", ".html", ".htm", ".tex", ".typ", ".yaml", ".yml", ".toml", ".sh"}
 
+# Runtime directories hold queue/outbox/ledger/state/token files, never
+# knowledge documents — never index them. Pruned only at the root level,
+# so a same-named folder deeper inside a vault/library stays indexed.
+# .git is pruned at any level (it is never a content folder).
+SKIP_TOP_DIRS = {"queue", "outbox", "data", "logs", "media", "state", "backups"}
+
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
 
 
@@ -77,6 +83,10 @@ def index_source(db, source, root):
     root = os.path.abspath(root)
     indexed = skipped = failed = 0
     for dirpath, _dirs, files in os.walk(root):
+        _dirs[:] = [
+            d for d in _dirs
+            if d != ".git" and not (dirpath == root and d in SKIP_TOP_DIRS)
+        ]
         for name in sorted(files):
             path = os.path.join(dirpath, name)
             rel = os.path.relpath(path, root)
@@ -105,8 +115,23 @@ def index_source(db, source, root):
                 (fid, source, path, title, mtime, text[:MAX_TEXT_CHARS], meta),
             )
             indexed += 1
+    # Prune rows whose source file was deleted or renamed: the walk above
+    # only upserts files that still exist, so a row for this source whose
+    # path is gone on disk is stale (the docs_ad trigger removes its FTS
+    # rows on DELETE). Guarded by the root still existing, so a missing
+    # root can never wipe a source.
+    pruned = 0
+    if os.path.isdir(root):
+        for fid, path in db.execute(
+            "SELECT id, path FROM docs WHERE source = ?", (source,)
+        ).fetchall():
+            if not os.path.exists(path):
+                db.execute("DELETE FROM docs WHERE id = ?", (fid,))
+                pruned += 1
+        if pruned:
+            db.commit()
     db.commit()
-    print(f"[{source}] indexed={indexed} skipped={skipped} failed={failed} root={root}")
+    print(f"[{source}] indexed={indexed} skipped={skipped} failed={failed} pruned={pruned} root={root}")
 
 
 def main():
