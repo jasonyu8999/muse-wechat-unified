@@ -1,5 +1,5 @@
 [Unit]
-Description=WeChat bridge watchdog (checks every 15 min, restarts only if down)
+Description=WeChat bridge watchdog (checks every 5 min, restarts only if down)
 
 [Service]
 Type=oneshot
